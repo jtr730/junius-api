@@ -1,6 +1,5 @@
 import os, base64, json, re
 from flask import Flask, request, jsonify
-from flask_cors import CORS
 import urllib.request
 
 app = Flask(__name__)
@@ -11,6 +10,7 @@ def add_cors(response):
     response.headers["Access-Control-Allow-Headers"] = "Content-Type"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     return response
+
 SPOTIFY_CLIENT_ID     = os.environ.get("SPOTIFY_CLIENT_ID", "")
 SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
 
@@ -53,12 +53,12 @@ def scan():
         token = get_spotify_token()
         artist = spotify_get(f"/artists/{artist_id}", token)
         all_albums = []
-        path = f"/artists/{artist_id}/albums?include_groups=album,single&limit=50&market=US"
-        while path and len(all_albums) < 200:
-            page = spotify_get(path, token)
+        url = f"/artists/{artist_id}/albums?include_groups=album,single&limit=50"
+        while url and len(all_albums) < 200:
+            page = spotify_get(url, token)
             all_albums.extend(page["items"])
             nxt = page.get("next")
-            path = nxt.replace("https://api.spotify.com/v1", "") if nxt else None
+            url = nxt.replace("https://api.spotify.com/v1", "") if nxt else None
         seen = set()
         unique_albums = []
         for a in all_albums:
@@ -67,41 +67,49 @@ def scan():
                 seen.add(k)
                 unique_albums.append(a)
         all_tracks = []
-        album_ids = [a["id"] for a in unique_albums]
-        for i in range(0, len(album_ids), 20):
-            batch = ",".join(album_ids[i:i+20])
-            albums_data = spotify_get(f"/albums?ids={batch}", token)
-            for album in albums_data.get("albums") or []:
-                if not album: continue
-                for t in (album.get("tracks") or {}).get("items") or []:
+        for album in unique_albums:
+            album_id = album["id"]
+            tracks_url = f"/albums/{album_id}/tracks?limit=50"
+            while tracks_url:
+                tracks_page = spotify_get(tracks_url, token)
+                for t in tracks_page.get("items") or []:
                     all_tracks.append({
+                        "id": t["id"],
                         "name": t["name"],
                         "album": album["name"],
                         "album_type": album["album_type"],
                         "release_date": album.get("release_date", "")[:4],
-                        "isrc": (t.get("external_ids") or {}).get("isrc"),
                         "popularity": album.get("popularity", 0),
                         "artists": ", ".join(a["name"] for a in t.get("artists", []))
                     })
+                nxt = tracks_page.get("next")
+                tracks_url = nxt.replace("https://api.spotify.com/v1", "") if nxt else None
         seen_t = set()
         unique_tracks = []
         for t in all_tracks:
-            k = t["isrc"] or t["name"].lower()
-            if k not in seen_t:
-                seen_t.add(k)
+            if t["id"] not in seen_t:
+                seen_t.add(t["id"])
                 unique_tracks.append(t)
+        track_ids = [t["id"] for t in unique_tracks]
+        isrc_map = {}
+        for i in range(0, len(track_ids), 50):
+            batch = ",".join(track_ids[i:i+50])
+            result = spotify_get(f"/tracks?ids={batch}", token)
+            for tr in result.get("tracks") or []:
+                if tr:
+                    isrc_map[tr["id"]] = (tr.get("external_ids") or {}).get("isrc")
+        for t in unique_tracks:
+            t["isrc"] = isrc_map.get(t["id"])
         gaps = [t for t in unique_tracks if not t["isrc"]]
         high_val = [t for t in unique_tracks if t["isrc"] and t["popularity"] >= 40]
         clean = [t for t in unique_tracks if t["isrc"] and t["popularity"] < 40]
         return jsonify({
-            "artist": {"name": artist["name"], "followers": artist["followers"]["total"], "genres": artist.get("genres", []), "image": (artist.get("images") or [{}])[0].get("url")},
-            "ipi": ipi,
-            "total_tracks": len(unique_tracks),
-            "gaps": gaps[:50],
-            "high_value": high_val[:20],
-            "clean": len(clean),
-            "gap_count": len(gaps),
-            "high_val_count": len(high_val)
+            "artist": {"name": artist["name"], "followers": artist["followers"]["total"],
+                       "genres": artist.get("genres", []),
+                       "image": (artist.get("images") or [{}])[0].get("url")},
+            "ipi": ipi, "total_tracks": len(unique_tracks),
+            "gaps": gaps[:50], "high_value": high_val[:20],
+            "clean": len(clean), "gap_count": len(gaps), "high_val_count": len(high_val)
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
