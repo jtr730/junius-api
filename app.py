@@ -70,7 +70,7 @@ def scan():
         album_ids = [a["id"] for a in unique_albums]
         for i in range(0, len(album_ids), 20):
             batch = ",".join(album_ids[i:i+20])
-            albums_data = spotify_get(f"/albums?ids={batch}&market=US", token)
+            albums_data = spotify_get(f"/albums?ids={batch}", token)
             for album in albums_data.get("albums") or []:
                 if not album: continue
                 for t in (album.get("tracks") or {}).get("items") or []:
